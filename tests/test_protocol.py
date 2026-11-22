@@ -107,3 +107,39 @@ def test_no_renderer_outside_game_mode(plugin):
     plugin.clients = [c]
     plugin.game_mode_checked = 0
     assert plugin._renderer_wanted() is False
+
+
+def test_menu_is_shown_even_when_disabled_or_hidden(plugin):
+    async def scenario():
+        await plugin._start_server()
+        r, w = await _connect()
+        await _send(w, {"op": "hello", "client": "decky-macro", "protocol": 1})
+        assert "menu" in (await _recv(r))["features"]
+        await _send(w, {"op": "menu", "id": "picker", "title": "Choose", "items": ["A", {"label": "B"}, True],
+                        "selected": 9, "hint": "A: play"})
+        await asyncio.sleep(0.1)
+        menu = plugin._scene()["menu"]
+        assert menu == {"title": "Choose", "hint": "A: play", "items": ["A", "B"], "selected": 1}
+        plugin.settings["enabled"] = False
+        plugin.settings["hidden_clients"] = ["decky-macro"]
+        assert plugin._scene()["menu"]["items"] == ["A", "B"]
+        plugin.game_mode, plugin.game_mode_checked = True, time.time()
+        assert plugin._renderer_wanted() is True
+        plugin.game_mode_checked = 0
+        await _send(w, {"op": "menu", "id": "picker", "items": []})
+        assert "non-empty" in (await _recv(r))["error"]
+        await _send(w, {"op": "clear", "id": "picker"})
+        await asyncio.sleep(0.1)
+        assert "menu" not in plugin._scene()
+        w.close()
+        await plugin._stop_server()
+    asyncio.run(scenario())
+
+
+def test_disabled_overlay_hides_cards(plugin):
+    c = main.Client(None)
+    c.id = "a"
+    c.blocks = {"x": {"zone": "top-left", "order": 0, "items": [{"label": "A", "text": "1"}]}}
+    plugin.clients = [c]
+    plugin.settings["enabled"] = False
+    assert plugin._scene()["blocks"] == []

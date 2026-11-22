@@ -7,12 +7,18 @@ the blocks they want displayed; a single renderer process draws them all.
 Protocol (version 1): newline-delimited JSON over /tmp/decky-overlay/overlay.sock
   -> {"op": "hello", "client": "decky-timer", "name": "Decky Timer", "protocol": 1}
   -> {"op": "set", "id": "timers", "zone": "top-right", "order": 0, "items": [ITEM...]}
+  -> {"op": "menu", "id": "picker", "title": "...", "items": ["A", "B"], "selected": 0,
+      "hint": "..."}                                      (interactive list, centred)
   -> {"op": "clear", "id": "timers"}
-  <- {"op": "welcome", "protocol": 1, "zones": [...]}   (after hello)
+  <- {"op": "welcome", "protocol": 1, "zones": [...], "features": ["menu"]}   (after hello)
   <- {"op": "error", "error": "..."}                     (invalid message)
 A client's blocks disappear when its connection closes, so a crashed or
 uninstalled plugin never leaves stale cards on screen. ITEM is described in
 renderer/renderer.py.
+A menu is drawn in the middle of the screen even when the overlay is disabled
+or the client hidden in the settings: the client opened it on a user action
+and drives it (input stays with the client; Decky Overlay only draws it).
+Only the most recently updated menu is shown.
 """
 import asyncio
 import glob
@@ -35,6 +41,8 @@ ZONES = ("top-left", "top-center", "top-right", "bottom-left", "bottom-right")
 MAX_CLIENTS = 16
 MAX_BLOCKS_PER_CLIENT = 8
 MAX_ITEMS_PER_BLOCK = 12
+MAX_MENU_ITEMS = 64
+FEATURES = ["menu"]
 MAX_LINE = 64 * 1024          # bytes per message
 LOG_MAX_BYTES = 256 * 1024
 RENDERER_MAX_FAILURES = 3
@@ -117,6 +125,26 @@ def _valid_item(item):
         if item.get("style") in ("normal", "warn", "alert", "muted"):
             out["style"] = item["style"]
     return out
+
+
+def _valid_menu(msg):
+    """Cleans a menu message; returns (menu, error)."""
+    items = msg.get("items")
+    if not isinstance(items, list) or not items:
+        return None, "items must be a non-empty list"
+    labels = []
+    for it in items[:MAX_MENU_ITEMS]:
+        if isinstance(it, dict):
+            it = it.get("label")
+        if isinstance(it, (str, int, float)) and not isinstance(it, bool):
+            labels.append(_text(it, 48) or "?")
+    if not labels:
+        return None, "no usable menu item"
+    sel = msg.get("selected", 0)
+    if not isinstance(sel, int) or isinstance(sel, bool):
+        sel = 0
+    return {"kind": "menu", "title": _text(msg.get("title"), 48), "hint": _text(msg.get("hint"), 80),
+            "items": labels, "selected": max(0, min(sel, len(labels) - 1)), "updated": _now()}, None
 
 
 # ---- Game Mode detection ------------------------------------------------------ #
@@ -271,7 +299,8 @@ class Plugin:
                 if error:
                     await self._send(client, {"op": "error", "error": error})
                 elif msg.get("op") == "hello":
-                    await self._send(client, {"op": "welcome", "protocol": PROTOCOL, "zones": list(ZONES)})
+                    await self._send(client, {"op": "welcome", "protocol": PROTOCOL, "zones": list(ZONES),
+                                              "features": FEATURES})
         except (ConnectionError, OSError):
             pass
         finally:
@@ -299,6 +328,13 @@ class Plugin:
             return "invalid block id"
         if op == "clear":
             client.blocks.pop(bid, None)
+        elif op == "menu":
+            if bid not in client.blocks and len(client.blocks) >= MAX_BLOCKS_PER_CLIENT:
+                return "too many blocks"
+            menu, error = _valid_menu(msg)
+            if error:
+                return error
+            client.blocks[bid] = menu
         elif op == "set":
             if bid not in client.blocks and len(client.blocks) >= MAX_BLOCKS_PER_CLIENT:
                 return "too many blocks"
@@ -324,11 +360,17 @@ class Plugin:
     def _scene(self):
         hidden = set(self.settings.get("hidden_clients", []))
         blocks = []
+        menu = None
         for c in self.clients:
-            if c.id is None or c.id in hidden:
+            if c.id is None:
+                continue
+            for b in c.blocks.values():
+                if b.get("kind") == "menu" and (menu is None or b["updated"] >= menu["updated"]):
+                    menu = b
+            if c.id in hidden:
                 continue
             for bid, b in c.blocks.items():
-                if b["items"]:
+                if b.get("kind") != "menu" and b["items"]:
                     blocks.append({"zone": b["zone"], "order": b["order"], "items": b["items"],
                                    "_key": (b["order"], c.connected_at, bid)})
         if self._preview_active():
@@ -337,7 +379,12 @@ class Plugin:
                 {"label": "Exemple", "text": "42", "style": "warn"},
             ]})
         blocks.sort(key=lambda b: b.pop("_key"))
-        return {"blocks": blocks, "settings": {k: self.settings[k] for k in ("size", "opacity")}}
+        if not self.settings.get("enabled", True) and not self._preview_active():
+            blocks = []  # cards are off; a menu is still shown
+        scene = {"blocks": blocks, "settings": {k: self.settings[k] for k in ("size", "opacity")}}
+        if menu is not None:
+            scene["menu"] = {k: menu[k] for k in ("title", "hint", "items", "selected")}
+        return scene
 
     def _in_game_mode(self):
         if _now() - self.game_mode_checked > 5:
@@ -353,9 +400,8 @@ class Plugin:
             return False
         if self._preview_active():
             return True
-        if not self.settings.get("enabled", True):
-            return False
-        return bool(self._scene()["blocks"])
+        scene = self._scene()
+        return bool(scene["blocks"] or scene.get("menu"))
 
     def _as_desktop_user(self, env):
         if os.geteuid() != 0:
@@ -490,7 +536,8 @@ class Plugin:
         hidden = set(self.settings.get("hidden_clients", []))
         return {
             "settings": self.settings,
-            "clients": [{"id": c.id, "name": c.name, "blocks": sum(len(b["items"]) for b in c.blocks.values()),
+            "clients": [{"id": c.id, "name": c.name,
+                         "blocks": sum(len(b["items"]) for b in c.blocks.values() if b.get("kind") != "menu"),
                          "hidden": c.id in hidden} for c in self.clients if c.id],
             "renderer_running": self.proc is not None and self.proc.poll() is None,
             "renderer_error": self.renderer_error,

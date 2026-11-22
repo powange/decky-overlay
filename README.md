@@ -40,17 +40,22 @@ Socket Unix `/tmp/decky-overlay/overlay.sock`, messages JSON, un par ligne (UTF-
   {"label": "FPS",   "text": "58", "style": "warn"}
 ]}
 
-// 3. Retirer un bloc
+// 3. Retirer un bloc (ou un menu)
 {"op": "clear", "id": "principal"}
+
+// 4. Menu au centre de l'écran (sélecteur, choix rapide…)
+{"op": "menu", "id": "choix", "title": "Choisir une macro", "items": ["Farm XP", "Boss"],
+ "selected": 0, "hint": "A : lancer · B : fermer"}
 ```
 
 - **Élément « compte à rebours »** : `end_at` (horodatage Unix) s'il tourne, `remaining` (secondes) s'il est en pause. Decky Overlay calcule l'affichage chaque seconde, y compris en négatif (en rouge) : inutile d'envoyer un message par seconde.
 - **Élément « texte »** : `text` (32 caractères max) et `style` parmi `normal`, `warn`, `alert`, `muted`.
 - `show_under` (facultatif) : n'affiche un compte à rebours que sous ce nombre de secondes.
 - **Garder la connexion ouverte** : quand elle se ferme, tous les blocs du plugin disparaissent. Un plugin planté ne laisse donc jamais de carte figée. Reconnecte-toi et renvoie tes blocs si Decky Overlay redémarre.
+- **Menu** : liste centrée avec une ligne en surbrillance (`selected`), 64 éléments max, défilement automatique au-delà de 9. Decky Overlay ne fait que l'afficher : c'est ton plugin qui lit la manette et renvoie `menu` avec le nouveau `selected` à chaque mouvement, puis `clear` à la fermeture. Un menu reste visible même si l'overlay est masqué dans les réglages, puisqu'il répond à une action de l'utilisateur. Si plusieurs plugins ouvrent un menu, seul le plus récent s'affiche. `welcome` annonce `"features": ["menu"]`.
 - Les erreurs sont renvoyées sous la forme `{"op": "error", "error": "..."}`.
 
-Le code client de [Decky Timer](https://github.com/powange/decky-timer/blob/main/main.py) (classe `OverlayClient`) sert d'exemple complet.
+Le code client de [Decky Macro](https://github.com/powange/decky-macro/blob/main/main.py) utilise le menu. Celui de [Decky Timer](https://github.com/powange/decky-timer/blob/main/main.py) (classe `OverlayClient`) sert d'exemple complet.
 
 ## Comment ça marche
 

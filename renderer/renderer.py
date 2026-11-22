@@ -18,6 +18,8 @@ ITEM is one card:
   {"label": "Boss", "countdown": {"remaining": 95, "paused": true}}
   {"label": "FPS", "text": "60", "style": "normal|warn|alert|muted"}
   optional "show_under": seconds - a countdown is only shown below that.
+The scene may also carry one interactive list, drawn in the middle:
+  "menu": {"title": "...", "items": ["A", "B"], "selected": 0, "hint": "..."}
 Countdowns are computed here, so the backend only writes when something
 changes. EOF on stdin (backend gone) makes the renderer exit.
 """
@@ -219,18 +221,18 @@ class Overlay:
 
     # ----------------------------------------------------------------- draw
 
-    def _text_width(self, text, size, bold):
+    def _text_width(self, text, size, bold, font=None):
         cr = self.cr
-        c_select_font(cr, FONT_MONO if bold else FONT_SANS, CAIRO_FONT_SLANT_NORMAL,
+        c_select_font(cr, font or (FONT_MONO if bold else FONT_SANS), CAIRO_FONT_SLANT_NORMAL,
                       CAIRO_FONT_WEIGHT_BOLD if bold else CAIRO_FONT_WEIGHT_NORMAL)
         c_set_font_size(cr, size)
         ext = CairoTextExtents()
         c_text_extents(cr, text.encode(), byref(ext))
         return ext.x_advance
 
-    def _text(self, text, x, y, size, bold, rgba):
+    def _text(self, text, x, y, size, bold, rgba, font=None):
         cr = self.cr
-        c_select_font(cr, FONT_MONO if bold else FONT_SANS, CAIRO_FONT_SLANT_NORMAL,
+        c_select_font(cr, font or (FONT_MONO if bold else FONT_SANS), CAIRO_FONT_SLANT_NORMAL,
                       CAIRO_FONT_WEIGHT_BOLD if bold else CAIRO_FONT_WEIGHT_NORMAL)
         c_set_font_size(cr, size)
         c_set_rgba(cr, *rgba)
@@ -288,11 +290,75 @@ class Overlay:
                                              max(bbox[2], box[2]), max(bbox[3], box[3]))
         return placed, bbox
 
-    def render(self, zones, settings):
+    def _menu_layout(self, menu, settings):
+        """Menu box geometry and visible rows, or None."""
+        if not menu or not menu.get("items"):
+            return None
+        m = self._metrics(settings)
+        s = m["scale"]
+        row_size = 20 * s
+        row_h = row_size * 1.7
+        title_size = 15 * s
+        hint_size = 12 * s
+        pad = 18 * s
+        items = [_cut(i, MENU_LABEL_MAX) for i in menu["items"]]
+        sel = max(0, min(int(menu.get("selected") or 0), len(items) - 1))
+        first, last = menu_window(len(items), sel, MENU_VISIBLE)
+        title = _cut(menu.get("title") or "", MENU_LABEL_MAX)
+        hint = _cut(menu.get("hint") or "", 80)
+        w = max([self._text_width(t, row_size, False) for t in items[first:last]] + [0]) + pad * 2 + 24 * s
+        w = max(w, self._text_width(title, title_size, True, FONT_SANS) + pad * 2,
+                self._text_width(hint, hint_size, False) + pad * 2, 320 * s)
+        w = min(w, self.width - 40)
+        h = pad * 2 + (last - first) * row_h
+        if title:
+            h += title_size + 12 * s
+        if hint:
+            h += hint_size + 12 * s
+        x = (self.width - w) / 2
+        y = (self.height - h) / 2
+        return {"x": x, "y": y, "w": w, "h": h, "pad": pad, "row_size": row_size, "row_h": row_h,
+                "title": title, "title_size": title_size, "hint": hint, "hint_size": hint_size,
+                "items": items, "sel": sel, "first": first, "last": last, "scale": s}
+
+    def _draw_menu(self, L, opacity):
+        cr = self.cr
+        s = L["scale"]
+        self._rounded(L["x"], L["y"], L["w"], L["h"], 14 * s)
+        c_set_rgba(cr, 0.05, 0.05, 0.07, max(0.85, opacity))
+        c_fill_preserve(cr)
+        c_set_line_width(cr, 1.5 * s)
+        c_set_rgba(cr, 1, 1, 1, 0.18)
+        c_stroke(cr)
+        x = L["x"] + L["pad"]
+        y = L["y"] + L["pad"]
+        if L["title"]:
+            self._text(L["title"], x, y + L["title_size"], L["title_size"], True, (1.0, 0.78, 0.30, 1), FONT_SANS)
+            y += L["title_size"] + 12 * s
+        for i in range(L["first"], L["last"]):
+            if i == L["sel"]:
+                self._rounded(L["x"] + 8 * s, y, L["w"] - 16 * s, L["row_h"], 8 * s)
+                c_set_rgba(cr, 0.20, 0.45, 0.85, 0.9)
+                c_fill(cr)
+            more = (i == L["first"] and L["first"] > 0) or (i == L["last"] - 1 and L["last"] < len(L["items"]))
+            fg = (1, 1, 1, 1) if i == L["sel"] else (0.85, 0.85, 0.88, 0.6 if more else 0.95)
+            self._text(L["items"][i], x + 4 * s, y + L["row_h"] / 2 + L["row_size"] * 0.35,
+                       L["row_size"], False, fg)
+            y += L["row_h"]
+        if L["hint"]:
+            y += 12 * s
+            self._text(L["hint"], x, y + L["hint_size"], L["hint_size"], False, (0.7, 0.7, 0.75, 1))
+
+    def render(self, zones, settings, menu=None):
         """Only the area covered by cards (now and before) is repainted, and the
         window is unmapped when there is nothing to show."""
         cr = self.cr
         placed, bbox = self._layout(zones, settings)
+        menu_l = self._menu_layout(menu, settings)
+        if menu_l is not None:
+            box = (menu_l["x"] - 4, menu_l["y"] - 4, menu_l["x"] + menu_l["w"] + 4, menu_l["y"] + menu_l["h"] + 4)
+            bbox = box if bbox is None else (min(bbox[0], box[0]), min(bbox[1], box[1]),
+                                             max(bbox[2], box[2]), max(bbox[3], box[3]))
         if bbox is None:
             if self.mapped:
                 XUnmapWindow(self.dpy, self.win)
@@ -335,6 +401,9 @@ class Overlay:
                            m["value_size"], True, value_fg)
                 y += m["box_h"] + m["gap"]
 
+        if menu_l is not None:
+            self._draw_menu(menu_l, opacity)
+
         c_pop_group_to_source(cr)
         c_set_operator(cr, CAIRO_OPERATOR_SOURCE)
         c_paint(cr)
@@ -349,6 +418,8 @@ SIZES = {"small": 0.8, "medium": 1.0, "large": 1.35, "xlarge": 1.75}
 ZONES = ("top-left", "top-center", "top-right", "bottom-left", "bottom-right")
 LABEL_MAX = 24   # longer labels are cut with an ellipsis (cards stay compact)
 VALUE_MAX = 16
+MENU_LABEL_MAX = 40
+MENU_VISIBLE = 9  # rows shown at once; the list scrolls around the selection
 
 # state -> (background rgba (alpha scaled by opacity), border rgba, label rgba, value rgba)
 STYLES = {
@@ -423,6 +494,14 @@ def build_zones(scene, now):
     return zones
 
 
+def menu_window(count, selected, visible):
+    """[first, last) of the rows shown so that `selected` stays in view."""
+    if count <= visible:
+        return 0, count
+    first = max(0, min(selected - visible // 2, count - visible))
+    return first, first + visible
+
+
 def seconds_until_change(scene, now):
     """Time until a displayed countdown can change; None = only on new input."""
     waits = []
@@ -477,9 +556,11 @@ def main():
             overlay.drain_events()
 
         zones = build_zones(scene, time.time())
-        key = (json.dumps(zones, sort_keys=True), json.dumps(scene.get("settings", {}), sort_keys=True))
+        menu = scene.get("menu") if isinstance(scene.get("menu"), dict) else None
+        key = (json.dumps(zones, sort_keys=True), json.dumps(scene.get("settings", {}), sort_keys=True),
+               json.dumps(menu, sort_keys=True))
         if key != last_key:
-            overlay.render(zones, scene.get("settings", {}))
+            overlay.render(zones, scene.get("settings", {}), menu)
             last_key = key
 
     XCloseDisplay(overlay.dpy)
