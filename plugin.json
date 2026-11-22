@@ -1,0 +1,11 @@
+{
+  "name": "Decky Overlay",
+  "author": "powange",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["overlay", "library", "utility"],
+    "description": "One in-game overlay shared by several Decky plugins (gamescope shows only one).",
+    "image": "https://raw.githubusercontent.com/powange/decky-overlay/main/assets/preview.png"
+  }
+}
