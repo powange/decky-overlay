@@ -37,6 +37,13 @@ def test_sleeps_until_next_change():
     assert renderer.seconds_until_change(static, now) is None
 
 
+def test_menu_window_keeps_selection_visible():
+    assert renderer.menu_window(5, 4, 9) == (0, 5)
+    assert renderer.menu_window(20, 0, 9) == (0, 9)
+    assert renderer.menu_window(20, 10, 9) == (6, 15)
+    assert renderer.menu_window(20, 19, 9) == (11, 20)
+
+
 @pytest.mark.skipif(shutil.which("Xvfb") is None, reason="Xvfb not installed")
 def test_renders_on_a_virtual_display():
     xvfb = subprocess.Popen(["Xvfb", ":92", "-screen", "0", "1280x800x24"],
@@ -45,7 +52,9 @@ def test_renders_on_a_virtual_display():
         time.sleep(1)
         proc = subprocess.Popen([sys.executable, renderer.__file__], stdin=subprocess.PIPE,
                                 stderr=subprocess.PIPE, env=dict(os.environ, DISPLAY=":92"))
-        scene = {"blocks": [{"zone": "top-left", "items": [{"label": "T", "text": "1"}]}], "settings": {}}
+        scene = {"blocks": [{"zone": "top-left", "items": [{"label": "T", "text": "1"}]}], "settings": {},
+                 "menu": {"title": "Choose", "items": [f"Macro {i}" for i in range(15)], "selected": 7,
+                          "hint": "A: play"}}
         proc.stdin.write((json.dumps(scene) + "\n").encode())
         proc.stdin.flush()
         time.sleep(1.5)

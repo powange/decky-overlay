@@ -1,6 +1,6 @@
 {
   "name": "decky-overlay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Decky Loader plugin: one in-game overlay shared by several plugins on the Steam Deck",
   "type": "module",
   "scripts": {
