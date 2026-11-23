@@ -25,8 +25,26 @@ def test_build_zones():
         {"zone": "nowhere", "items": [{"label": "FPS", "text": "60", "style": "warn"}]}]}
     zones = renderer.build_zones(scene, now)
     assert [r[2] for r in zones["top-right"]] == ["normal", "pause"]
-    assert zones["top-right"][0][0].endswith("…")
-    assert zones["top-center"] == [("FPS", "60", "warn")]
+    assert zones["top-right"][0][0] == ["x" * 24, "x" * 16]   # long label wraps
+    assert zones["top-center"] == [(["FPS"], ["60"], "warn")]
+
+
+def test_wrap():
+    assert renderer.wrap("Pluie, fin dans 12 min sur Shark Bait Cove", 16, 3) == [
+        "Pluie, fin dans", "12 min sur Shark", "Bait Cove"]
+    assert renderer.wrap("The Damned Sea Dog Tavern", 24, 2) == ["The Damned Sea Dog", "Tavern"]
+    lines = renderer.wrap("un deux trois quatre cinq six", 9, 2)
+    assert len(lines) == 2 and lines[-1].endswith("…") and all(len(l) <= 9 for l in lines)
+    assert renderer.wrap("", 16, 3) == [""]
+
+
+def test_countdown_style():
+    now = 1000.0
+    scene = {"blocks": [{"items": [
+        {"label": "Pluie", "countdown": {"end_at": now + 60}, "style": "alert"},
+        {"label": "Fini", "countdown": {"end_at": now - 5}, "style": "muted"}]}]}
+    rows = renderer.build_zones(scene, now)["top-center"]
+    assert [r[2] for r in rows] == ["alert", "over"]
 
 
 def test_sleeps_until_next_change():

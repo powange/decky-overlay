@@ -259,8 +259,14 @@ class Overlay:
             "pad_x": 12 * scale, "pad_y": 7 * scale, "gap": 6 * scale,
             "margin": 12 * scale, "radius": 10 * scale,
         }
-        m["box_h"] = m["pad_y"] * 2 + m["name_size"] + 4 * scale + m["value_size"]
+        m["name_line"] = m["name_size"] * 1.25
+        m["value_line"] = m["value_size"] * 1.05
         return m
+
+    @staticmethod
+    def _box_h(m, labels, values):
+        return (m["pad_y"] * 2 + m["name_size"] + (len(labels) - 1) * m["name_line"] + 4 * m["scale"]
+                + m["value_size"] + (len(values) - 1) * m["value_line"])
 
     def _layout(self, zones, settings):
         """zones: {zone: [row, ...]} -> ([(zone, x, y, w, rows)], bbox or None)."""
@@ -272,11 +278,11 @@ class Overlay:
             if not rows:
                 continue
             widths = []
-            for label, value, state in rows:
-                widths.append(max(self._text_width(_label(label, state), m["name_size"], False),
-                                  self._text_width(value, m["value_size"], True)) + m["pad_x"] * 2)
+            for labels, values, _state in rows:
+                widths.append(max([self._text_width(t, m["name_size"], False) for t in labels]
+                                  + [self._text_width(t, m["value_size"], True) for t in values]) + m["pad_x"] * 2)
             w = max(max(widths), 110 * m["scale"])
-            total_h = len(rows) * m["box_h"] + (len(rows) - 1) * m["gap"]
+            total_h = sum(self._box_h(m, labels, values) for labels, values, _ in rows) + (len(rows) - 1) * m["gap"]
             y = m["margin"] if zone.startswith("top") else self.height - m["margin"] - total_h
             if zone.endswith("left"):
                 x = m["margin"]
@@ -386,20 +392,22 @@ class Overlay:
         c_set_operator(cr, CAIRO_OPERATOR_OVER)
 
         for _zone, x, y, w, rows in placed:
-            for label, value, state in rows:
+            for labels, values, state in rows:
                 bg, border, name_fg, value_fg = STYLES.get(state, STYLES["normal"])
-                self._rounded(x, y, w, m["box_h"], m["radius"])
+                box_h = self._box_h(m, labels, values)
+                self._rounded(x, y, w, box_h, m["radius"])
                 c_set_rgba(cr, *bg[:3], bg[3] * opacity)
                 c_fill_preserve(cr)
                 c_set_line_width(cr, 1.5 * m["scale"])
                 c_set_rgba(cr, *border)
                 c_stroke(cr)
-                self._text(_label(label, state), x + m["pad_x"], y + m["pad_y"] + m["name_size"],
-                           m["name_size"], False, name_fg)
-                self._text(value, x + m["pad_x"],
-                           y + m["pad_y"] + m["name_size"] + 4 * m["scale"] + m["value_size"] * 0.92,
-                           m["value_size"], True, value_fg)
-                y += m["box_h"] + m["gap"]
+                ty = y + m["pad_y"] + m["name_size"]
+                for i, line in enumerate(labels):
+                    self._text(line, x + m["pad_x"], ty + i * m["name_line"], m["name_size"], False, name_fg)
+                ty += (len(labels) - 1) * m["name_line"] + 4 * m["scale"] + m["value_size"] * 0.92
+                for i, line in enumerate(values):
+                    self._text(line, x + m["pad_x"], ty + i * m["value_line"], m["value_size"], True, value_fg)
+                y += box_h + m["gap"]
 
         if menu_l is not None:
             self._draw_menu(menu_l, opacity)
@@ -416,8 +424,10 @@ FONT_SANS = b"sans-serif"
 FONT_MONO = b"monospace"
 SIZES = {"small": 0.8, "medium": 1.0, "large": 1.35, "xlarge": 1.75}
 ZONES = ("top-left", "top-center", "top-right", "bottom-left", "bottom-right")
-LABEL_MAX = 24   # longer labels are cut with an ellipsis (cards stay compact)
-VALUE_MAX = 16
+LABEL_WRAP = 24  # characters per label line; longer labels wrap
+LABEL_LINES = 2  # beyond that, the last line ends with an ellipsis
+VALUE_WRAP = 16  # characters per text-value line
+VALUE_LINES = 3
 MENU_LABEL_MAX = 40
 MENU_VISIBLE = 9  # rows shown at once; the list scrolls around the selection
 
@@ -439,6 +449,36 @@ def _label(label, state):
 def _cut(text, limit):
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def wrap(text, width, max_lines):
+    """Text -> lines of at most `width` characters, cut on spaces when possible.
+
+    At most `max_lines` lines; the last one ends with "…" if text is left over.
+    """
+    words = " ".join(str(text).split()).split(" ")
+    lines, current = [], ""
+    for word in words:
+        while len(word) > width:  # a word longer than a line is split
+            if current:
+                lines.append(current)
+                current = ""
+            lines.append(word[:width])
+            word = word[width:]
+        if not current:
+            current = word
+        elif len(current) + 1 + len(word) <= width:
+            current += " " + word
+        else:
+            lines.append(current)
+            current = word
+    if current or not lines:
+        lines.append(current)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        last = lines[-1]
+        lines[-1] = (last if len(last) < width else last[:width - 1]) + "…"
+    return lines
 
 
 # --------------------------------------------------------------------------- #
@@ -472,25 +512,26 @@ def _hidden(item, remaining):
 
 
 def build_zones(scene, now):
-    """Scene -> {zone: [(label, value, state), ...]} for what is visible now."""
+    """Scene -> {zone: [(label lines, value lines, state), ...]} for what is visible now."""
     zones = {}
     for block in scene.get("blocks", []):
         zone = block.get("zone") if block.get("zone") in ZONES else "top-center"
         for item in block.get("items", []):
             if not isinstance(item, dict):
                 continue
-            label = _cut(item.get("label") or "", LABEL_MAX)
+            style = item.get("style") if item.get("style") in ("normal", "warn", "alert", "muted") else "normal"
             cd = item.get("countdown")
             if isinstance(cd, dict):
                 r = _remaining(cd, now)
                 if _hidden(item, r):
                     continue
-                state = "pause" if cd.get("paused") else ("normal" if r > 0 else "over")
-                value = format_seconds(r)
+                state = "pause" if cd.get("paused") else (style if r > 0 else "over")
+                values = [format_seconds(r)]
             else:
-                value = _cut(item.get("text") or "", VALUE_MAX)
-                state = item.get("style") if item.get("style") in STYLES else "normal"
-            zones.setdefault(zone, []).append((label, value, state))
+                values = wrap(item.get("text") or "", VALUE_WRAP, VALUE_LINES)
+                state = style
+            labels = wrap(_label(item.get("label") or "", state), LABEL_WRAP, LABEL_LINES)
+            zones.setdefault(zone, []).append((labels, values, state))
     return zones
 
 

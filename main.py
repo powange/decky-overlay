@@ -42,7 +42,7 @@ MAX_CLIENTS = 16
 MAX_BLOCKS_PER_CLIENT = 8
 MAX_ITEMS_PER_BLOCK = 12
 MAX_MENU_ITEMS = 64
-FEATURES = ["menu"]
+FEATURES = ["menu", "wrap", "countdown_style"]
 MAX_LINE = 64 * 1024          # bytes per message
 LOG_MAX_BYTES = 256 * 1024
 RENDERER_MAX_FAILURES = 3
@@ -117,11 +117,13 @@ def _valid_item(item):
             if not isinstance(end_at, (int, float)) or isinstance(end_at, bool):
                 return None
             out["countdown"] = {"end_at": float(end_at)}
+        if item.get("style") in ("normal", "warn", "alert", "muted"):
+            out["style"] = item["style"]  # colour while it runs (overtime stays red)
         su = item.get("show_under")
         if isinstance(su, (int, float)) and not isinstance(su, bool) and su > 0:
             out["show_under"] = float(su)
     else:
-        out["text"] = _text(item.get("text"), 32)
+        out["text"] = _text(item.get("text"), 48)
         if item.get("style") in ("normal", "warn", "alert", "muted"):
             out["style"] = item["style"]
     return out

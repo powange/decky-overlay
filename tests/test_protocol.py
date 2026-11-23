@@ -72,7 +72,9 @@ def test_rejects_bad_messages(plugin):
 def test_items_are_sanitised():
     assert main._valid_item({"label": "a" * 100, "countdown": {"end_at": True}}) is None
     item = main._valid_item({"label": "x" * 100, "text": "y" * 100, "style": "evil"})
-    assert len(item["label"]) == 48 and len(item["text"]) == 32 and "style" not in item
+    assert len(item["label"]) == 48 and len(item["text"]) == 48 and "style" not in item
+    styled = main._valid_item({"label": "t", "countdown": {"end_at": 5.0}, "style": "alert"})
+    assert styled == {"label": "t", "countdown": {"end_at": 5.0}, "style": "alert"}
     cd = main._valid_item({"label": "t", "countdown": {"paused": True, "remaining": 5}, "show_under": 300})
     assert cd == {"label": "t", "countdown": {"paused": True, "remaining": 5.0}, "show_under": 300.0}
 
